@@ -1,0 +1,98 @@
+# Starter pipeline
+# Start with a minimal pipeline that you can customize to build and deploy your code.
+# Add steps that build, run tests, deploy, and more:
+# https://aka.ms/yaml
+
+variables:
+ serviceconnection: 'ALPSEC'
+ azureSubscriptionEndpoint: 'ALPSEC-AKS'
+ azureResourceGroup: 'rg-kafka'
+ purgeitall: "false"
+
+trigger:
+- none
+
+
+stages:
+
+
+- stage: Deploy_K8S
+  displayName: Deploy K8S 
+
+  jobs:
+  - job: Deploy_Helm
+    displayName: Deploy to prometheus to AKS
+    pool: LukasScanbatch
+
+    steps:
+
+    - task: HelmInstaller@1
+      displayName: Download Helm to build-agent
+      inputs:
+        helmVersionToInstall: v3.0.3
+
+   
+    # deploy heml charts - namespaces already created in CREATE_ALL pipeline
+    - task: HelmDeploy@0
+      displayName: Helm deploy - prometheus - akszk
+      inputs:
+        connectionType: Azure Resource Manager
+        azureSubscriptionEndpoint: $(azureSubscriptionEndpoint)
+        azureResourceGroup: $(azureResourceGroup)
+        kubernetesCluster: 'akszk'
+        command: upgrade
+        install: true
+        force: false
+        chartType: FilePath
+        chartPath: '$(System.DefaultWorkingDirectory)/prometheus'
+        releaseName: 'prometheus'
+        namespace: zookeeper
+        arguments: '--timeout 30m'
+
+    - task: HelmDeploy@0
+      displayName: Helm deploy - prometheus - aksyellow
+      inputs:
+        connectionType: Azure Resource Manager
+        azureSubscriptionEndpoint: $(azureSubscriptionEndpoint)
+        azureResourceGroup: $(azureResourceGroup)
+        kubernetesCluster: 'aksyellow'
+        command: upgrade
+        install: true
+        force: false
+        chartType: FilePath
+        chartPath: '$(System.DefaultWorkingDirectory)/prometheus'
+        releaseName: 'prometheus'
+        namespace: kafka
+        arguments: '--timeout 30m'
+
+    - task: HelmDeploy@0
+      displayName: Helm deploy - prometheus - aksorange
+      inputs:
+        connectionType: Azure Resource Manager
+        azureSubscriptionEndpoint: $(azureSubscriptionEndpoint)
+        azureResourceGroup: $(azureResourceGroup)
+        kubernetesCluster: 'aksorange'
+        command: upgrade
+        install: true
+        force: false
+        chartType: FilePath
+        chartPath: '$(System.DefaultWorkingDirectory)/prometheus'
+        releaseName: 'prometheus'
+        namespace: kafka
+        arguments: '--timeout 30m'
+
+    - task: HelmDeploy@0
+      displayName: Helm deploy - Grafana - akszk
+      inputs:
+        connectionType: Azure Resource Manager
+        azureSubscriptionEndpoint: $(azureSubscriptionEndpoint)
+        azureResourceGroup: $(azureResourceGroup)
+        kubernetesCluster: 'akszk'
+        command: upgrade
+        install: true
+        force: true
+        chartType: FilePath
+        chartPath: '$(System.DefaultWorkingDirectory)/grafana'
+        releaseName: 'grafana'
+        namespace: monitoring
+        arguments: '--timeout 30m'
