@@ -1,0 +1,590 @@
+# Starter pipeline
+# Start with a minimal pipeline that you can customize to build and deploy your code.
+# Add steps that build, run tests, deploy, and more:
+# https://aka.ms/yaml
+
+variables:
+ serviceconnection: ''
+ azureSubscriptionEndpoint: ''
+ azureResourceGroup: 'rg-kafka'
+ DESTROY_YELLOW: 'yes'
+ DESTROY_ORANGE: 'yes'
+ DESTROY_PINK: 'yes'
+ DESTROY_PURPLE: 'yes'
+ DEPLOY_PINK: 'yes'
+ DEPLOY_PURPLE: 'yes'
+ 
+
+trigger:
+- none
+
+
+stages:
+- stage: Build_IAC
+  displayName: Deploy IAC 
+  jobs:
+  - job: Build
+    displayName: Deploy IAC - terraform
+    pool: poolname
+
+    steps:
+    - task: TerraformInstaller@0
+      displayName: 'terraform: install'
+      inputs:
+        terraformVersion: '0.12.20'
+
+    - task: TerraformTaskV1@0
+      displayName: 'terraform: init'
+      inputs:
+        # provider: 'azurerm'
+        command: 'init'
+        #commandOptions: '-variable-file=variables_k8s.tf'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/iac'
+        backendServiceArm: ''
+        backendAzureRmResourceGroupName: 'rg-kafkatest'
+        backendAzureRmStorageAccountName: 'storage'
+        backendAzureRmContainerName: 'terraform'
+        backendAzureRmKey: 'terraform-access'
+
+    - task: TerraformTaskV1@0
+      displayName: 'terraform: validate the template'
+      inputs:
+        # provider: 'azurerm'
+        command: 'validate'
+        #commandOptions: '-variable-file=variables_k8s.tf'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/iac'
+
+    - task: TerraformTaskV1@0
+      displayName: 'terraform: create plan'
+      inputs:
+        # provider: 'azurerm'
+        command: 'plan'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/iac'
+        #commandOptions: '-variable-file=variables_k8s.tf'
+        environmentServiceNameAzureRM: ''
+
+    - task: TerraformTaskV1@0
+      displayName: 'terraform: apply'  
+      inputs:  
+        # provider: 'azurerm'
+        command: 'apply'
+        #commandOptions: '-variable-file=variables_k8s.tf'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/iac'
+        environmentServiceNameAzureRM: ''
+
+    # create namespaces - helm3 requires an existing namespace
+    - template: create_ns.yml
+      parameters: 
+        namespace: ['zookeeper', 'monitoring']
+        targetCluster: 'akszk'
+
+    - template: create_ns.yml
+      parameters: 
+        namespace: ['kafka', 'monitoring']
+        targetCluster: 'aksyellow'
+    
+    - template: create_ns.yml
+      parameters: 
+        namespace: ['kafka', 'monitoring']
+        targetCluster: 'aksorange'
+
+    - template: create_ns.yml
+      parameters: 
+        namespace: ['kafka', 'monitoring']
+        targetCluster: 'akspink'
+
+    - template: create_ns.yml
+      parameters: 
+        namespace: ['kafka', 'monitoring']
+        targetCluster: 'akspurple'
+
+- stage: Deploy_K8S
+  displayName: Deploy Kafka (Helm) 
+  jobs:
+
+  - job: Deploy_Kafka
+    displayName: Deploy to AKS - Kafka
+    pool: poolname
+
+    steps:
+
+    - task: HelmInstaller@1
+      displayName: Download Helm to build-agent
+      inputs:
+        helmVersionToInstall: v3.0.3
+    
+    ################################################ deploy helm charts
+    - task: HelmDeploy@0
+      displayName: Helm deploy - zookeeper
+      inputs:
+        connectionType: Azure Resource Manager
+        azureSubscriptionEndpoint: $(azureSubscriptionEndpoint)
+        azureResourceGroup: $(azureResourceGroup)
+        kubernetesCluster: 'akszk'
+        command: upgrade
+        install: true
+        force: false
+        chartType: FilePath
+        chartPath: '$(System.DefaultWorkingDirectory)/cp-helm-charts'
+        releaseName: 'cp-zookeeper'
+        namespace: zookeeper
+        overrideValues: cp-zookeeper.enabled=true
+        arguments: '--timeout 30m'
+
+    - task: Kubernetes@1
+      displayName: Get ZK endpoint
+      name: zkEndpoint
+      inputs:
+        connectionType: Azure Resource Manager
+        azureSubscriptionEndpoint: $(azureSubscriptionEndpoint)
+        azureResourceGroup: $(azureResourceGroup)
+        kubernetesCluster: 'akszk'
+        command: get
+        arguments: 'svc cp-zookeeper'
+        namespace: 'zookeeper'
+        outputFormat: 'jsonpath="{.status.loadBalancer.ingress[0].ip}:{.spec.ports[0].port}"'
+
+    - task: Bash@3
+      displayName: detect zookeeper endpoint
+      inputs: 
+          targetType: inline
+          workingDirectory: '$(System.DefaultWorkingDirectory)/iac'
+          script: |
+            echo $ZK_ENDPOINT
+      env:
+        ZK_ENDPOINT: $(zkEndpoint.KubectlOutput)
+    
+    ################################## KAFKA YELLOW + ORANGE
+    - task: HelmDeploy@0
+      displayName: Helm deploy - kafka - yellow
+      inputs:
+        connectionType: Azure Resource Manager
+        azureSubscriptionEndpoint: $(azureSubscriptionEndpoint)
+        azureResourceGroup: $(azureResourceGroup)
+        kubernetesCluster: 'aksyellow'
+        command: upgrade
+        install: true
+        force: false
+        waitForExecution: false
+        chartType: FilePath
+        chartPath: '$(System.DefaultWorkingDirectory)/cp-helm-charts'
+        releaseName: 'cp-kafka'
+        namespace: kafka
+        overrideValues: cp-kafka.enabled=true,cp-kafka.configurationOverrides.zookeeper\.connect="$(zkEndpoint.KubectlOutput)",cp-kafka.kafka_rack=1
+        arguments: '--timeout 30m'
+
+    - task: HelmDeploy@0
+      displayName: Helm deploy - kafka - orange
+      inputs:
+        connectionType: Azure Resource Manager
+        azureSubscriptionEndpoint: $(azureSubscriptionEndpoint)
+        azureResourceGroup: $(azureResourceGroup)
+        kubernetesCluster: 'aksorange'
+        command: upgrade
+        install: true
+        force: false
+        waitForExecution: false
+        chartType: FilePath
+        chartPath: '$(System.DefaultWorkingDirectory)/cp-helm-charts'
+        releaseName: 'cp-kafka'
+        namespace: kafka
+        overrideValues: cp-kafka.enabled=true,cp-kafka.configurationOverrides.zookeeper\.connect="$(zkEndpoint.KubectlOutput)",cp-kafka.kafka_rack=2
+        arguments: '--timeout 30m'
+
+- stage: Deploy_Pink_Kafka
+  displayName: Deploy Kafka - Pink
+
+  jobs:
+
+  - job: Deploy_Kafka_Pink
+    condition: and(succeeded(), eq(variables['DEPLOY_PINK'], 'yes'))
+    displayName: Deploy to AKS - Kafka - PINK
+    pool: poolname
+
+    steps:
+
+    - task: HelmInstaller@1
+      displayName: Download Helm to build-agent
+      inputs:
+        helmVersionToInstall: v3.0.3
+
+    - task: Kubernetes@1
+      displayName: Get ZK endpoint
+      name: zkEndpoint
+      inputs:
+        connectionType: Azure Resource Manager
+        azureSubscriptionEndpoint: $(azureSubscriptionEndpoint)
+        azureResourceGroup: $(azureResourceGroup)
+        kubernetesCluster: 'akszk'
+        command: get
+        arguments: 'svc cp-zookeeper'
+        namespace: 'zookeeper'
+        outputFormat: 'jsonpath="{.status.loadBalancer.ingress[0].ip}:{.spec.ports[0].port}"'
+
+    - task: Bash@3
+      displayName: detect zookeeper endpoint
+      inputs: 
+          targetType: inline
+          workingDirectory: '$(System.DefaultWorkingDirectory)/iac'
+          script: |
+            echo $ZK_ENDPOINT  
+      env:
+        ZK_ENDPOINT: $(zkEndpoint.KubectlOutput)
+
+    - task: HelmDeploy@0
+      displayName: Helm deploy - kafka - pink
+      inputs:
+        connectionType: Azure Resource Manager
+        azureSubscriptionEndpoint: $(azureSubscriptionEndpoint)
+        azureResourceGroup: $(azureResourceGroup)
+        kubernetesCluster: 'akspink'
+        command: upgrade
+        install: true
+        force: false
+        waitForExecution: false
+        chartType: FilePath
+        chartPath: '$(System.DefaultWorkingDirectory)/cp-helm-charts'
+        releaseName: 'cp-kafka'
+        namespace: kafka
+        overrideValues: cp-kafka.enabled=true,cp-kafka.configurationOverrides.zookeeper\.connect="$(zkEndpoint.KubectlOutput)",cp-kafka.kafka_rack=3
+        arguments: '--timeout 30m'
+
+- stage: Deploy_Purple_Kafka
+  displayName: Deploy Kafka - Purple
+
+  jobs:
+
+  - job: Deploy_Kafka_Purple
+    condition: and(succeeded(), eq(variables['DEPLOY_PURPLE'], 'yes'))
+    displayName: Deploy to AKS - Kafka - PURPLE
+    pool: LukasScanbatch
+
+    steps:
+
+    - task: HelmInstaller@1
+      displayName: Download Helm to build-agent
+      inputs:
+        helmVersionToInstall: v3.0.3
+
+    - task: Kubernetes@1
+      displayName: Get ZK endpoint
+      name: zkEndpoint
+      inputs:
+        connectionType: Azure Resource Manager
+        azureSubscriptionEndpoint: $(azureSubscriptionEndpoint)
+        azureResourceGroup: $(azureResourceGroup)
+        kubernetesCluster: 'akszk'
+        command: get
+        arguments: 'svc cp-zookeeper'
+        namespace: 'zookeeper'
+        outputFormat: 'jsonpath="{.status.loadBalancer.ingress[0].ip}:{.spec.ports[0].port}"'
+
+    - task: Bash@3
+      displayName: detect zookeeper endpoint
+      inputs: 
+          targetType: inline
+          workingDirectory: '$(System.DefaultWorkingDirectory)/iac'
+          script: |
+            echo $ZK_ENDPOINT
+            ZK_ENDPOINT="$(echo $ZK_ENDPOINT | sed 's/,//g')"
+            echo $ZK_ENDPOINT
+      env:
+        ZK_ENDPOINT: $(zkEndpoint.KubectlOutput)
+
+    - task: HelmDeploy@0
+      displayName: Helm deploy - kafka - purple
+      inputs:
+        connectionType: Azure Resource Manager
+        azureSubscriptionEndpoint: $(azureSubscriptionEndpoint)
+        azureResourceGroup: $(azureResourceGroup)
+        kubernetesCluster: 'akspurple'
+        command: upgrade
+        install: true
+        force: false
+        waitForExecution: false
+        chartType: FilePath
+        chartPath: '$(System.DefaultWorkingDirectory)/cp-helm-charts'
+        releaseName: 'cp-kafka'
+        namespace: kafka
+        overrideValues: cp-kafka.enabled=true,cp-kafka.configurationOverrides.zookeeper\.connect="$(zkEndpoint.KubectlOutput)",cp-kafka.kafka_rack=4
+        arguments: '--timeout 30m'
+
+
+- stage: Deploy_Monitoring_OrangeYellow
+  displayName: Deploy Monitoring Orange Yellow
+
+  jobs:
+
+  - job: Deploy_Monitoring_OrangeYellow
+    displayName: Deploy Prometheus 
+    pool: LukasScanbatch
+
+    steps:
+    # deploy heml charts - namespaces already created in CREATE_ALL pipeline
+    - task: HelmInstaller@1
+      displayName: Download Helm to build-agent
+      inputs:
+        helmVersionToInstall: v3.0.3
+
+    - task: HelmDeploy@0
+      displayName: Helm deploy - kafka-manager - akszk
+      inputs:
+        connectionType: Azure Resource Manager
+        azureSubscriptionEndpoint: $(azureSubscriptionEndpoint)
+        azureResourceGroup: $(azureResourceGroup)
+        kubernetesCluster: 'akszk'
+        command: upgrade
+        install: true
+        force: false
+        waitForExecution: false
+        chartType: FilePath
+        chartPath: '$(System.DefaultWorkingDirectory)/kafka-manager'
+        releaseName: 'kafka-manager'
+        namespace: zookeeper
+        arguments: '--timeout 30m'
+
+    - task: HelmDeploy@0
+      displayName: Helm deploy - prometheus - akszk
+      inputs:
+        connectionType: Azure Resource Manager
+        azureSubscriptionEndpoint: $(azureSubscriptionEndpoint)
+        azureResourceGroup: $(azureResourceGroup)
+        kubernetesCluster: 'akszk'
+        command: upgrade
+        install: true
+        force: false
+        waitForExecution: false
+        chartType: FilePath
+        chartPath: '$(System.DefaultWorkingDirectory)/prometheus'
+        releaseName: 'prometheus'
+        namespace: zookeeper
+        arguments: '--timeout 30m'
+
+    - task: HelmDeploy@0
+      displayName: Helm deploy - prometheus - aksyellow
+      inputs:
+        connectionType: Azure Resource Manager
+        azureSubscriptionEndpoint: $(azureSubscriptionEndpoint)
+        azureResourceGroup: $(azureResourceGroup)
+        kubernetesCluster: 'aksyellow'
+        command: upgrade
+        install: true
+        force: false
+        waitForExecution: false
+        chartType: FilePath
+        chartPath: '$(System.DefaultWorkingDirectory)/prometheus'
+        releaseName: 'prometheus'
+        namespace: kafka
+        arguments: '--timeout 30m'
+
+    - task: HelmDeploy@0
+      displayName: Helm deploy - prometheus - aksorange
+      inputs:
+        connectionType: Azure Resource Manager
+        azureSubscriptionEndpoint: $(azureSubscriptionEndpoint)
+        azureResourceGroup: $(azureResourceGroup)
+        kubernetesCluster: 'aksorange'
+        command: upgrade
+        install: true
+        force: false
+        waitForExecution: false
+        chartType: FilePath
+        chartPath: '$(System.DefaultWorkingDirectory)/prometheus'
+        releaseName: 'prometheus'
+        namespace: kafka
+        arguments: '--timeout 30m'
+
+- stage: Deploy_Monitoring_PinkPurple
+  displayName: Deploy Monitoring_PinkPurple
+
+  jobs:
+
+  - job: Deploy_Monitoring_PinkPurple
+    displayName: Deploy Prometheus 
+    pool: poolname
+
+    steps:
+    - task: HelmInstaller@1
+      displayName: Download Helm to build-agent
+      inputs:
+        helmVersionToInstall: v3.0.3
+
+    - task: HelmDeploy@0
+      displayName: Helm deploy - prometheus - akspink
+      inputs:
+        connectionType: Azure Resource Manager
+        azureSubscriptionEndpoint: $(azureSubscriptionEndpoint)
+        azureResourceGroup: $(azureResourceGroup)
+        kubernetesCluster: 'akspink'
+        command: upgrade
+        install: true
+        force: false
+        waitForExecution: false
+        chartType: FilePath
+        chartPath: '$(System.DefaultWorkingDirectory)/prometheus'
+        releaseName: 'prometheus'
+        namespace: kafka
+        arguments: '--timeout 30m'
+
+    - task: HelmDeploy@0
+      displayName: Helm deploy - prometheus - akspurple
+      inputs:
+        connectionType: Azure Resource Manager
+        azureSubscriptionEndpoint: $(azureSubscriptionEndpoint)
+        azureResourceGroup: $(azureResourceGroup)
+        kubernetesCluster: 'akspurple'
+        command: upgrade
+        install: true
+        force: false
+        waitForExecution: false
+        chartType: FilePath
+        chartPath: '$(System.DefaultWorkingDirectory)/prometheus'
+        releaseName: 'prometheus'
+        namespace: kafka
+        arguments: '--timeout 30m'
+
+- stage: Deploy_Grafana
+  displayName: Deploy Grafana ZK
+
+  jobs:
+
+  - job: Deploy_Grafana
+    displayName: Deploy Grafana
+    pool: poolname
+
+    steps:
+    # deploy heml charts - namespaces already created in CREATE_ALL pipeline
+    - task: HelmInstaller@1
+      displayName: Download Helm to build-agent
+      inputs:
+        helmVersionToInstall: v3.0.3
+
+    - task: HelmDeploy@0
+      displayName: Helm deploy - Grafana - akszk
+      inputs:
+        connectionType: Azure Resource Manager
+        azureSubscriptionEndpoint: $(azureSubscriptionEndpoint)
+        azureResourceGroup: $(azureResourceGroup)
+        kubernetesCluster: 'akszk'
+        command: upgrade
+        install: true
+        force: true
+        chartType: FilePath
+        chartPath: '$(System.DefaultWorkingDirectory)/grafana'
+        releaseName: 'grafana'
+        namespace: monitoring
+        arguments: '--timeout 30m'
+
+
+- stage: Destroy_Yellow_Kafka
+  displayName: Destroy Yellow - Kafka
+
+  jobs:
+
+  - job: Destroy_Kafka_Yellow
+    condition: and(succeeded(), eq(variables['DESTROY_YELLOW'], 'yes'))
+    displayName: DESTROY - YELLOW - Kafka
+    pool: LukasScanbatch
+
+    steps:
+    - task: HelmInstaller@1
+      displayName: Download Helm to build-agent
+      inputs:
+        helmVersionToInstall: v3.0.3
+
+    - task: HelmDeploy@0
+      displayName: Helm DESTROY - kafka - yellow
+      inputs:
+        connectionType: Azure Resource Manager
+        azureSubscriptionEndpoint: $(azureSubscriptionEndpoint)
+        azureResourceGroup: $(azureResourceGroup)
+        kubernetesCluster: 'aksyellow'
+        command: uninstall
+        waitForExecution: true
+        namespace: kafka
+        arguments: 'cp-kafka --timeout 30m'
+
+- stage: Destroy_Orange_Kafka
+  displayName: Destroy Orange - Kafka 
+
+  jobs:
+
+  - job: Destroy_Kafka_Orange
+    condition: and(succeeded(), eq(variables['DESTROY_ORANGE'], 'yes'))
+    displayName: DESTROY - ORANGE - Kafka 
+    pool: poolname
+
+    steps:
+    - task: HelmInstaller@1
+      displayName: Download Helm to build-agent
+      inputs:
+        helmVersionToInstall: v3.0.3
+
+    - task: HelmDeploy@0
+      displayName: Helm DESTROY - kafka - orange
+      inputs:
+        connectionType: Azure Resource Manager
+        azureSubscriptionEndpoint: $(azureSubscriptionEndpoint)
+        azureResourceGroup: $(azureResourceGroup)
+        kubernetesCluster: 'aksorange'
+        command: uninstall 
+        waitForExecution: true
+        namespace: kafka
+        arguments: 'cp-kafka --timeout 30m'
+
+- stage: Destroy_Pink_Kafka
+  displayName: Destroy Pink - Kafka 
+
+  jobs:
+
+  - job: Destroy_Kafka_Pink
+    condition: and(succeeded(), eq(variables['DESTROY_PINK'], 'yes'))
+    displayName: DESTROY - PINK - Kafka 
+    pool: poolname
+
+    steps:
+    - task: HelmInstaller@1
+      displayName: Download Helm to build-agent
+      inputs:
+        helmVersionToInstall: v3.0.3
+
+    - task: HelmDeploy@0
+      displayName: Helm DESTROY - kafka - pink
+      inputs:
+        connectionType: Azure Resource Manager
+        azureSubscriptionEndpoint: $(azureSubscriptionEndpoint)
+        azureResourceGroup: $(azureResourceGroup)
+        kubernetesCluster: 'akspink'
+        command: uninstall
+        waitForExecution: true
+        namespace: kafka
+        arguments: 'cp-kafka --timeout 30m'
+
+
+- stage: Destroy_Purple_Kafka
+  displayName: Destroy Purple - Kafka 
+
+  jobs:
+
+  - job: Destroy_Kafka_Purple
+    condition: and(succeeded(), eq(variables['DESTROY_PURPLE'], 'yes'))
+    displayName: DESTROY - PURPLE - Kafka 
+    pool: poolname
+
+    steps:
+    - task: HelmInstaller@1
+      displayName: Download Helm to build-agent
+      inputs:
+        helmVersionToInstall: v3.0.3
+
+    - task: HelmDeploy@0
+      displayName: Helm DESTROY - kafka - purple
+      inputs:
+        connectionType: Azure Resource Manager
+        azureSubscriptionEndpoint: $(azureSubscriptionEndpoint)
+        azureResourceGroup: $(azureResourceGroup)
+        kubernetesCluster: 'akspurple'
+        command: uninstall
+        waitForExecution: true
+        namespace: kafka
+        arguments: 'cp-kafka --timeout 30m'

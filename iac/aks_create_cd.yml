@@ -1,0 +1,62 @@
+# Starter pipeline
+# Start with a minimal pipeline that you can customize to build and deploy your code.
+# Add steps that build, run tests, deploy, and more:
+# https://aka.ms/yaml
+
+variables:
+ serviceconnection: ''
+
+trigger:
+ none
+
+stages:
+- stage: Build
+  displayName: Install Stuff 
+  jobs:
+  - job: Build
+    displayName: Prepare Agent
+    pool: $(poolname)
+
+    steps:
+    - task: TerraformInstaller@0
+      inputs:
+        terraformVersion: '0.12.18'
+
+    - task: TerraformTaskV1@0
+      inputs:
+        displayName: 'terraform: init'
+        provider: 'azurerm'
+        command: 'init'
+        commandOptions: '-variable-file=variables_test.tf'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/iac/'
+        backendServiceArm: ''
+        backendAzureRmResourceGroupName: 'rg-kafkatest'
+        backendAzureRmStorageAccountName: 'storage'
+        backendAzureRmContainerName: 'terraform'
+        backendAzureRmKey: 'terraform-access'
+
+    - task: TerraformTaskV1@0
+      inputs:
+        displayName: 'terraform: validate the template'
+        provider: 'azurerm'
+        command: 'validate'
+        commandOptions: '-variable-file=variables_test.tf'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/iac/'
+
+    - task: TerraformTaskV1@0
+      inputs:
+        displayName: 'terraform: create plan'
+        provider: 'azurerm'
+        command: 'plan'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/iac/'
+        commandOptions: '-variable-file=variables_test.tf'
+        environmentServiceNameAzureRM: ''
+
+    - task: TerraformTaskV1@0
+      inputs:
+        displayName: 'terraform: apply'
+        provider: 'azurerm'
+        command: 'apply'
+        commandOptions: '-variable-file=variables_test.tf'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/iac/'
+        environmentServiceNameAzureRM: ''
