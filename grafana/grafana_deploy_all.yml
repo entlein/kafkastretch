@@ -1,0 +1,83 @@
+# Starter pipeline
+# Start with a minimal pipeline that you can customize to build and deploy your code.
+# Add steps that build, run tests, deploy, and more:
+# https://aka.ms/yaml
+
+variables:
+ serviceconnection: ''
+ azureSubscriptionEndpoint: ''
+ azureResourceGroup: 'rg-kafka'
+
+trigger:
+- none
+
+
+stages:
+
+
+- stage: Deploy_K8S
+  displayName: Deploy K8S 
+
+  jobs:
+  - job: Deploy_Helm
+    displayName: Deploy to grafana to AKS
+    pool: poolname
+
+    steps:
+
+    - task: HelmInstaller@1
+      displayName: Download Helm to build-agent
+      inputs:
+        helmVersionToInstall: v3.0.3
+   
+    - task: HelmDeploy@0
+      displayName: Helm deploy - zookeeper
+      inputs:
+        connectionType: Azure Resource Manager
+        azureSubscriptionEndpoint: $(azureSubscriptionEndpoint)
+        azureResourceGroup: $(azureResourceGroup)
+        kubernetesCluster: 'akszk'
+        command: install
+        install: true
+        force: true
+        chartType: FilePath
+        chartPath: '$(System.DefaultWorkingDirectory)/grafana'
+        releaseName: 'grafana-1'
+        namespace: monitoring
+        overrideValues: 
+        arguments: '--timeout 30m'
+
+
+    - task: HelmDeploy@0
+      displayName: Helm deploy - kafka - yellow
+      inputs:
+        connectionType: Azure Resource Manager
+        azureSubscriptionEndpoint: $(azureSubscriptionEndpoint)
+        azureResourceGroup: $(azureResourceGroup)
+        kubernetesCluster: 'aksyellow'
+        command: install
+        install: true
+        force: false
+        chartType: FilePath
+        chartPath: '$(System.DefaultWorkingDirectory)/grafana'
+        releaseName: 'grafana'
+        namespace: monitoring
+        overrideValues: 
+        arguments: '--timeout 30m'
+
+    - task: HelmDeploy@0
+      displayName: Helm deploy - kafka - orange
+      inputs:
+        connectionType: Azure Resource Manager
+        azureSubscriptionEndpoint: $(azureSubscriptionEndpoint)
+        azureResourceGroup: $(azureResourceGroup)
+        kubernetesCluster: 'aksorange'
+        command: install
+        install: true
+        force: false
+        chartType: FilePath
+        chartPath: '$(System.DefaultWorkingDirectory)/grafana'
+        releaseName: 'grafana'
+        namespace: monitoring
+        overrideValues: 
+        arguments: '--timeout 30m'

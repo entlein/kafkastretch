@@ -1,0 +1,18 @@
+parameters: 
+  namespace: []
+  targetCluster: ''
+
+
+steps:
+  - ${{ each ns in parameters.namespace }}:
+
+    - task: Kubernetes@1
+      displayName: 'Create Namespace - ${{ ns }}'
+      inputs:
+        connectionType: Azure Resource Manager
+        azureSubscriptionEndpoint: $(azureSubscriptionEndpoint)
+        azureResourceGroup: $(azureResourceGroup)
+        kubernetesCluster: '${{ parameters.targetCluster }}'
+        command: apply
+        useConfigurationFile: true
+        inline: '{ "kind": "Namespace", "apiVersion": "v1", "metadata": { "name": "${{ ns }}" }}'

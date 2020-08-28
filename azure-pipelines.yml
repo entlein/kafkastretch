@@ -1,0 +1,51 @@
+# Docker
+# Build a Docker image 
+# https://docs.microsoft.com/azure/devops/pipelines/languages/docker
+
+variables:
+ name: 'distrolessdebug'
+ dockerpath: '$(Build.SourcesDirectory)/BaseImages/$(name)'
+ rep:  'localhost:32000/$(name)'
+ tag: 'registry'
+
+trigger:
+ none
+
+resources:
+- repo: self
+
+stages:
+- stage: Build
+  displayName: Build image
+  jobs:  
+  - job: Build
+    displayName: Build
+    pool:
+      localpool
+    steps:
+    - task: Docker@2
+      displayName: Build an image
+      inputs:
+        command: build
+        dockerfile: '$(dockerpath)/Dockerfile'
+        repository: '$(rep)'
+        tags: |
+          $(tag)
+
+     
+    - task: Docker@2
+      displayName: Push the image to my local registry
+      inputs:
+        command: push
+        repository: '$(rep)'
+        tags: $(tag)
+
+
+#    - task: Docker@2 
+#      displayName: Prune older builds 
+#      inputs:
+#        command: rm 
+#        repository: '$(rep)'
+#        tags: $(tag)
+
+          
